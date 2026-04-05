@@ -16,6 +16,11 @@ func ZipFlipper(cfg *config.Config) {
 	pathToExportLocation := cfg.PathToExportLocation
 	log.Printf("Starting\n")
 
+	//deleting existing zip folder if it is already there
+	log.Printf("%v start checking for existing zip\n", time.Now())
+	deleteExistingArchive(pathToExportLocation)
+	log.Printf("%v done checking for existing zip\n", time.Now())
+
 	//copy
 	log.Printf("%v start copying\n", time.Now())
 	copyFlipperFolder(pathToFlipper, pathToExportLocation)
@@ -46,6 +51,24 @@ func ZipFlipper(cfg *config.Config) {
 	log.Printf("%v start remove copy\n", time.Now())
 	deleteCopiedFlipperFolder(pathToExportLocation)
 	log.Printf("%v done remove copy\n", time.Now())
+
+}
+
+func deleteExistingArchive(pathToExportLocation string) {
+	zipLocation := path.Join(filepath.Dir(pathToExportLocation), "multi_flipper.zip")
+
+	_, err := os.Stat(zipLocation)
+
+	if err != nil {
+		//may not be there
+		return
+	}
+
+	err = os.RemoveAll(zipLocation)
+	if err != nil {
+		log.Fatalf("Couldn't remove the zipped directory for some reason? : %v\n", pathToExportLocation)
+	}
+	log.Printf("%v removed the directory successfully\n", time.Now())
 
 }
 
