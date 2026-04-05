@@ -14,7 +14,6 @@ func ZipFlipper(cfg *config.Config) {
 	//config
 	pathToFlipper := cfg.PathToFlipper
 	pathToExportLocation := cfg.PathToExportLocation
-	fileToRemove := ".env"
 	log.Printf("Starting\n")
 
 	//copy
@@ -24,8 +23,19 @@ func ZipFlipper(cfg *config.Config) {
 
 	//remove from copy
 	log.Printf("%v start remove\n", time.Now())
+	fileToRemove := ".env"
 	removeEnvFile(pathToExportLocation, fileToRemove)
 	log.Printf("%v done remove\n", time.Now())
+
+	//remove build directory
+	log.Printf("%v start remove build directory\n", time.Now())
+	removeBuildDirectory(pathToExportLocation)
+	log.Printf("%v done remove build directory\n", time.Now())
+
+	//remove build directory
+	log.Printf("%v start remove git directory\n", time.Now())
+	removeGitDirectory(pathToExportLocation)
+	log.Printf("%v done remove git directory\n", time.Now())
 
 	//zip
 	log.Printf("%v start zip\n", time.Now())
@@ -36,6 +46,16 @@ func ZipFlipper(cfg *config.Config) {
 	log.Printf("%v start remove copy\n", time.Now())
 	deleteCopiedFlipperFolder(pathToExportLocation)
 	log.Printf("%v done remove copy\n", time.Now())
+
+}
+
+func removeGitDirectory(pathToExportLocation string) {
+	fullPathOfFileToRemove := path.Join(pathToExportLocation, ".git")
+	err := os.RemoveAll(fullPathOfFileToRemove)
+
+	if err != nil {
+		log.Fatalf("Could not find git to remove: %v", fullPathOfFileToRemove)
+	}
 
 }
 
@@ -62,6 +82,15 @@ func archiveFlipperFolder(pathToExportLocation string) {
 func removeEnvFile(pathToExportLocation string, fileToRemove string) {
 	fullPathOfFileToRemove := path.Join(pathToExportLocation, fileToRemove)
 	err := os.Remove(fullPathOfFileToRemove)
+
+	if err != nil {
+		log.Fatalf("Could not find file to remove: %v", fullPathOfFileToRemove)
+	}
+}
+
+func removeBuildDirectory(pathToExportLocation string) {
+	fullPathOfFileToRemove := path.Join(pathToExportLocation, "build")
+	err := os.RemoveAll(fullPathOfFileToRemove)
 
 	if err != nil {
 		log.Fatalf("Could not find file to remove: %v", fullPathOfFileToRemove)
