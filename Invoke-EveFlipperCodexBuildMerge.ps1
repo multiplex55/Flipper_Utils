@@ -92,6 +92,7 @@ Write-Step 'Checking clean working tree after checkout'
 Require-CleanWorkingTree
 
 Write-Step 'Building with .\make.ps1 wails'
+Write-Step 'Building with .\make.ps1 wails'
 $buildStartTime = Get-Date
 $previousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
@@ -139,7 +140,7 @@ Write-Step 'Checking clean working tree before merge'
 Require-CleanWorkingTree
 
 Write-Step ('Merging Codex branch into feature branch: ' + $CodexBranch + ' -> ' + $FeatureBranch)
-git merge --no-ff $CodexBranch
+git merge --no-ff --no-edit $CodexBranch
 if ($LASTEXITCODE -ne 0) { Fail 'Merge failed. Resolve conflicts manually, then continue or abort the merge yourself.' }
 
 Write-Step 'Final status'
