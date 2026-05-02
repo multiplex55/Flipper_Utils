@@ -33,9 +33,9 @@ MsgBox(
     . "2. Copy your long-lived feature branch name to the clipboard.`n"
     . "3. Press " . SET_FEATURE_BRANCH_HOTKEY_NAME . " to save that feature branch.`n"
     . "4. Copy the Codex branch name to the clipboard.`n"
-    . "5. Press " . RUN_HOTKEY_NAME . " to run build + conditional merge.`n`n"
+    . "5. Press " . RUN_HOTKEY_NAME . " to choose build/merge mode.`n`n"
     . "Hotkeys while WezTerm is active:`n"
-    . RUN_HOTKEY_NAME . " = checkout Codex branch, build, and merge into saved feature branch if successful`n"
+    . RUN_HOTKEY_NAME . " = choose build + merge only, or build + merge + push`n"
     . SET_FEATURE_BRANCH_HOTKEY_NAME . " = save clipboard as target feature branch`n"
     . SHOW_FEATURE_BRANCH_HOTKEY_NAME . " = show saved feature branch`n"
     . "Esc = exit immediately`n`n"
@@ -102,25 +102,9 @@ RunCodexBuildMerge() {
         ExitApp()
     }
 
-    confirmationText :=
-        APP_NAME . "`n`n"
-        . "This will run in the active WezTerm terminal:`n`n"
-        . "1. Clear terminal`n"
-        . "2. Verify git repo is clean`n"
-        . "3. git fetch --all --prune`n"
-        . "4. checkout Codex branch:`n"
-        . "   " . codexBranch . "`n"
-        . "5. Run:`n"
-        . "   .\make.ps1 wails`n"
-        . "6. If build exits successfully and emits OK:, checkout feature branch:`n"
-        . "   " . featureBranch . "`n"
-        . "7. Merge Codex branch into feature branch`n`n"
-        . "No push will be performed.`n`n"
-        . "Press OK to continue or Cancel to abort."
+    pushAfterMerge := PromptForRunMode(codexBranch, featureBranch)
 
-    result := MsgBox(confirmationText, APP_NAME, "OKCancel")
-
-    if (result != "OK") {
+    if (pushAfterMerge = "") {
         MsgBox(APP_NAME . "`n`nOperation cancelled.")
         ExitApp()
     }
@@ -134,7 +118,7 @@ RunCodexBuildMerge() {
     Send("{Enter}")
     Sleep(CLEAR_DELAY_MS)
 
-    command := BuildPowerShellCommand(PS_HELPER_FILE, codexBranch, featureBranch)
+    command := BuildPowerShellCommand(PS_HELPER_FILE, codexBranch, featureBranch, pushAfterMerge)
 
     Sleep(COMMAND_DELAY_MS)
 
@@ -148,6 +132,41 @@ RunCodexBuildMerge() {
 
     Sleep(100)
     ExitApp()
+}
+
+PromptForRunMode(codexBranch, featureBranch) {
+    global APP_NAME
+
+    confirmationText :=
+        APP_NAME . "`n`n"
+        . "This will run in the active WezTerm terminal:`n`n"
+        . "1. Clear terminal`n"
+        . "2. Verify git repo is clean`n"
+        . "3. git fetch --all --prune`n"
+        . "4. Checkout Codex branch:`n"
+        . "   " . codexBranch . "`n"
+        . "5. Run:`n"
+        . "   .\make.ps1 wails`n"
+        . "6. If the build succeeds, checkout feature branch:`n"
+        . "   " . featureBranch . "`n"
+        . "7. Fast-forward the feature branch from origin if possible`n"
+        . "8. Merge Codex branch into feature branch using --no-edit`n`n"
+        . "Choose what to do after the merge:`n`n"
+        . "YES = build, merge, then git push origin HEAD:" . featureBranch . "`n"
+        . "NO = build and merge only. No push.`n"
+        . "CANCEL = abort."
+
+    result := MsgBox(confirmationText, APP_NAME, "YesNoCancel")
+
+    if (result = "Yes") {
+        return true
+    }
+
+    if (result = "No") {
+        return false
+    }
+
+    return ""
 }
 
 SaveFeatureBranchFromClipboard() {
@@ -197,13 +216,19 @@ ShowSavedFeatureBranch() {
     )
 }
 
-BuildPowerShellCommand(psHelperFile, codexBranch, featureBranch) {
-    return "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
-    . QuotePowerShellArg(psHelperFile)
+BuildPowerShellCommand(psHelperFile, codexBranch, featureBranch, pushAfterMerge) {
+    command := "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
+        . QuotePowerShellArg(psHelperFile)
         . " -CodexBranch "
         . QuotePowerShellArg(codexBranch)
         . " -FeatureBranch "
         . QuotePowerShellArg(featureBranch)
+
+    if pushAfterMerge {
+        command .= " -PushAfterMerge"
+    }
+
+    return command
 }
 
 QuotePowerShellArg(value) {
@@ -267,7 +292,9 @@ GetPowerShellHelperScript() {
     lines.Push("    [string]$CodexBranch,")
     lines.Push("")
     lines.Push("    [Parameter(Mandatory = $true)]")
-    lines.Push("    [string]$FeatureBranch")
+    lines.Push("    [string]$FeatureBranch,")
+    lines.Push("")
+    lines.Push("    [switch]$PushAfterMerge")
     lines.Push(")")
     lines.Push("")
     lines.Push("$ErrorActionPreference = 'Continue'")
@@ -310,6 +337,7 @@ GetPowerShellHelperScript() {
     lines.Push("")
     lines.Push("function Checkout-CodexBranch {")
     lines.Push("    param([string]$BranchName)")
+    lines.Push("")
     lines.Push("    if (Test-LocalBranch $BranchName) {")
     lines.Push("        git checkout $BranchName")
     lines.Push("        if ($LASTEXITCODE -ne 0) { Fail ('Failed to checkout local Codex branch: ' + $BranchName) }")
@@ -327,17 +355,41 @@ GetPowerShellHelperScript() {
     lines.Push("")
     lines.Push("function Checkout-ExistingLocalBranch {")
     lines.Push("    param([string]$BranchName)")
-    lines.Push("    if (-not (Test-LocalBranch $BranchName)) { Fail ('Target feature branch must already exist locally: ' + $BranchName) }")
+    lines.Push("")
+    lines.Push("    if (-not (Test-LocalBranch $BranchName)) {")
+    lines.Push("        Fail ('Target feature branch must already exist locally: ' + $BranchName)")
+    lines.Push("    }")
+    lines.Push("")
     lines.Push("    git checkout $BranchName")
     lines.Push("    if ($LASTEXITCODE -ne 0) { Fail ('Failed to checkout feature branch: ' + $BranchName) }")
     lines.Push("}")
     lines.Push("")
+    lines.Push("function FastForward-FeatureBranchFromOrigin {")
+    lines.Push("    param([string]$BranchName)")
+    lines.Push("")
+    lines.Push("    if (-not (Test-RemoteBranch $BranchName)) {")
+    lines.Push("        Write-Host ('No origin branch found for feature branch, skipping fast-forward: origin/' + $BranchName) -ForegroundColor Yellow")
+    lines.Push("        return")
+    lines.Push("    }")
+    lines.Push("")
+    lines.Push("    Write-Step ('Fast-forwarding feature branch from origin if needed: origin/' + $BranchName)")
+    lines.Push("    git merge --ff-only ('origin/' + $BranchName)")
+    lines.Push("")
+    lines.Push("    if ($LASTEXITCODE -ne 0) {")
+    lines.Push("        Fail ('Feature branch could not be fast-forwarded from origin/' + $BranchName + '. Pull/rebase/merge manually, then retry.')")
+    lines.Push("    }")
+    lines.Push("}")
+    lines.Push("")
     lines.Push("Write-Step 'Eve Flipper Codex Build/Merge Helper'")
+    lines.Push("")
+    lines.Push("Write-Host ('Push after merge: ' + [bool]$PushAfterMerge)")
     lines.Push("")
     lines.Push("if ($CodexBranch -eq $FeatureBranch) { Fail 'Codex branch and feature branch are the same branch.' }")
     lines.Push("")
     lines.Push("$repoRoot = git rev-parse --show-toplevel 2>$null")
-    lines.Push("if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($repoRoot)) { Fail 'Current terminal directory is not inside a git repository.' }")
+    lines.Push("if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($repoRoot)) {")
+    lines.Push("    Fail 'Current terminal directory is not inside a git repository.'")
+    lines.Push("}")
     lines.Push("")
     lines.Push("Set-Location $repoRoot")
     lines.Push("Write-Host ('Repo: ' + $repoRoot)")
@@ -355,7 +407,6 @@ GetPowerShellHelperScript() {
     lines.Push("Write-Step 'Checking clean working tree after checkout'")
     lines.Push("Require-CleanWorkingTree")
     lines.Push("")
-    lines.Push("Write-Step 'Building with .\make.ps1 wails'")
     lines.Push("Write-Step 'Building with .\make.ps1 wails'")
     lines.Push("$buildStartTime = Get-Date")
     lines.Push("$previousErrorActionPreference = $ErrorActionPreference")
@@ -375,6 +426,10 @@ GetPowerShellHelperScript() {
     lines.Push("}")
     lines.Push("")
     lines.Push("$binaryInfo = Get-Item -LiteralPath $wailsBinaryPath")
+    lines.Push("if ($binaryInfo.LastWriteTime -lt $buildStartTime.AddSeconds(-10)) {")
+    lines.Push("    Fail ('Expected Wails binary exists, but it does not appear to have been updated by this build: ' + $binaryInfo.FullName)")
+    lines.Push("}")
+    lines.Push("")
     lines.Push("Write-Host ''")
     lines.Push("Write-Host ('Verified Wails binary: ' + $binaryInfo.FullName) -ForegroundColor Green")
     lines.Push("Write-Host ('Binary last write time: ' + $binaryInfo.LastWriteTime) -ForegroundColor DarkGreen")
@@ -400,6 +455,11 @@ GetPowerShellHelperScript() {
     lines.Push("Write-Step ('Checking out target feature branch: ' + $FeatureBranch)")
     lines.Push("Checkout-ExistingLocalBranch $FeatureBranch")
     lines.Push("")
+    lines.Push("Write-Step 'Checking clean working tree after feature branch checkout'")
+    lines.Push("Require-CleanWorkingTree")
+    lines.Push("")
+    lines.Push("FastForward-FeatureBranchFromOrigin $FeatureBranch")
+    lines.Push("")
     lines.Push("Write-Step 'Checking clean working tree before merge'")
     lines.Push("Require-CleanWorkingTree")
     lines.Push("")
@@ -407,12 +467,32 @@ GetPowerShellHelperScript() {
     lines.Push("git merge --no-ff --no-edit $CodexBranch")
     lines.Push("if ($LASTEXITCODE -ne 0) { Fail 'Merge failed. Resolve conflicts manually, then continue or abort the merge yourself.' }")
     lines.Push("")
+    lines.Push("if ($PushAfterMerge) {")
+    lines.Push("    Write-Step ('Pushing feature branch to origin: ' + $FeatureBranch)")
+    lines.Push("    git push origin ('HEAD:' + $FeatureBranch)")
+    lines.Push("")
+    lines.Push("    if ($LASTEXITCODE -ne 0) {")
+    lines.Push("        Fail ('git push failed for feature branch: ' + $FeatureBranch)")
+    lines.Push("    }")
+    lines.Push("")
+    lines.Push("    Write-Host ('SUCCESS: pushed feature branch to origin: ' + $FeatureBranch) -ForegroundColor Green")
+    lines.Push("} else {")
+    lines.Push("    Write-Host ''")
+    lines.Push("    Write-Host 'Push was not requested. No git push was performed.' -ForegroundColor Yellow")
+    lines.Push("}")
+    lines.Push("")
     lines.Push("Write-Step 'Final status'")
     lines.Push("git status --short --branch")
     lines.Push("")
     lines.Push("Write-Host ''")
     lines.Push("Write-Host ('SUCCESS: merged ' + $CodexBranch + ' into ' + $FeatureBranch) -ForegroundColor Green")
-    lines.Push("Write-Host 'No push was performed.' -ForegroundColor Yellow")
+    lines.Push("")
+    lines.Push("if ($PushAfterMerge) {")
+    lines.Push("    Write-Host ('SUCCESS: pushed ' + $FeatureBranch + ' to origin') -ForegroundColor Green")
+    lines.Push("} else {")
+    lines.Push("    Write-Host 'No push was performed.' -ForegroundColor Yellow")
+    lines.Push("}")
+    lines.Push("")
     lines.Push("exit 0")
 
     return JoinLines(lines)

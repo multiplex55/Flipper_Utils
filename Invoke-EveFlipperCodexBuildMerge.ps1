@@ -3,7 +3,9 @@
     [string]$CodexBranch,
 
     [Parameter(Mandatory = $true)]
-    [string]$FeatureBranch
+    [string]$FeatureBranch,
+
+    [switch]$PushAfterMerge
 )
 
 $ErrorActionPreference = 'Continue'
@@ -46,6 +48,7 @@ function Test-RemoteBranch {
 
 function Checkout-CodexBranch {
     param([string]$BranchName)
+
     if (Test-LocalBranch $BranchName) {
         git checkout $BranchName
         if ($LASTEXITCODE -ne 0) { Fail ('Failed to checkout local Codex branch: ' + $BranchName) }
@@ -63,17 +66,41 @@ function Checkout-CodexBranch {
 
 function Checkout-ExistingLocalBranch {
     param([string]$BranchName)
-    if (-not (Test-LocalBranch $BranchName)) { Fail ('Target feature branch must already exist locally: ' + $BranchName) }
+
+    if (-not (Test-LocalBranch $BranchName)) {
+        Fail ('Target feature branch must already exist locally: ' + $BranchName)
+    }
+
     git checkout $BranchName
     if ($LASTEXITCODE -ne 0) { Fail ('Failed to checkout feature branch: ' + $BranchName) }
 }
 
+function FastForward-FeatureBranchFromOrigin {
+    param([string]$BranchName)
+
+    if (-not (Test-RemoteBranch $BranchName)) {
+        Write-Host ('No origin branch found for feature branch, skipping fast-forward: origin/' + $BranchName) -ForegroundColor Yellow
+        return
+    }
+
+    Write-Step ('Fast-forwarding feature branch from origin if needed: origin/' + $BranchName)
+    git merge --ff-only ('origin/' + $BranchName)
+
+    if ($LASTEXITCODE -ne 0) {
+        Fail ('Feature branch could not be fast-forwarded from origin/' + $BranchName + '. Pull/rebase/merge manually, then retry.')
+    }
+}
+
 Write-Step 'Eve Flipper Codex Build/Merge Helper'
+
+Write-Host ('Push after merge: ' + [bool]$PushAfterMerge)
 
 if ($CodexBranch -eq $FeatureBranch) { Fail 'Codex branch and feature branch are the same branch.' }
 
 $repoRoot = git rev-parse --show-toplevel 2>$null
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($repoRoot)) { Fail 'Current terminal directory is not inside a git repository.' }
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($repoRoot)) {
+    Fail 'Current terminal directory is not inside a git repository.'
+}
 
 Set-Location $repoRoot
 Write-Host ('Repo: ' + $repoRoot)
@@ -91,7 +118,6 @@ Checkout-CodexBranch $CodexBranch
 Write-Step 'Checking clean working tree after checkout'
 Require-CleanWorkingTree
 
-Write-Step 'Building with .\make.ps1 wails'
 Write-Step 'Building with .\make.ps1 wails'
 $buildStartTime = Get-Date
 $previousErrorActionPreference = $ErrorActionPreference
@@ -111,6 +137,10 @@ if (-not (Test-Path -LiteralPath $wailsBinaryPath)) {
 }
 
 $binaryInfo = Get-Item -LiteralPath $wailsBinaryPath
+if ($binaryInfo.LastWriteTime -lt $buildStartTime.AddSeconds(-10)) {
+    Fail ('Expected Wails binary exists, but it does not appear to have been updated by this build: ' + $binaryInfo.FullName)
+}
+
 Write-Host ''
 Write-Host ('Verified Wails binary: ' + $binaryInfo.FullName) -ForegroundColor Green
 Write-Host ('Binary last write time: ' + $binaryInfo.LastWriteTime) -ForegroundColor DarkGreen
@@ -136,6 +166,11 @@ Require-CleanWorkingTree
 Write-Step ('Checking out target feature branch: ' + $FeatureBranch)
 Checkout-ExistingLocalBranch $FeatureBranch
 
+Write-Step 'Checking clean working tree after feature branch checkout'
+Require-CleanWorkingTree
+
+FastForward-FeatureBranchFromOrigin $FeatureBranch
+
 Write-Step 'Checking clean working tree before merge'
 Require-CleanWorkingTree
 
@@ -143,10 +178,30 @@ Write-Step ('Merging Codex branch into feature branch: ' + $CodexBranch + ' -> '
 git merge --no-ff --no-edit $CodexBranch
 if ($LASTEXITCODE -ne 0) { Fail 'Merge failed. Resolve conflicts manually, then continue or abort the merge yourself.' }
 
+if ($PushAfterMerge) {
+    Write-Step ('Pushing feature branch to origin: ' + $FeatureBranch)
+    git push origin ('HEAD:' + $FeatureBranch)
+
+    if ($LASTEXITCODE -ne 0) {
+        Fail ('git push failed for feature branch: ' + $FeatureBranch)
+    }
+
+    Write-Host ('SUCCESS: pushed feature branch to origin: ' + $FeatureBranch) -ForegroundColor Green
+} else {
+    Write-Host ''
+    Write-Host 'Push was not requested. No git push was performed.' -ForegroundColor Yellow
+}
+
 Write-Step 'Final status'
 git status --short --branch
 
 Write-Host ''
 Write-Host ('SUCCESS: merged ' + $CodexBranch + ' into ' + $FeatureBranch) -ForegroundColor Green
-Write-Host 'No push was performed.' -ForegroundColor Yellow
+
+if ($PushAfterMerge) {
+    Write-Host ('SUCCESS: pushed ' + $FeatureBranch + ' to origin') -ForegroundColor Green
+} else {
+    Write-Host 'No push was performed.' -ForegroundColor Yellow
+}
+
 exit 0
